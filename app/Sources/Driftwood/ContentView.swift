@@ -28,8 +28,20 @@ struct ContentView: View {
               }
               LazyVGrid(columns: cols, spacing: 16) {
                 ForEach(group.apps) { app in
-                  AppCard(app: app, running: store.isRunning(app), metrics: store.metrics[app.id]) {
+                  AppCard(app: app, running: store.isRunning(app),
+                          metrics: store.metrics[app.id],
+                          override: store.appPolicy[app.bundleID]) {
                     store.toggle(app)
+                  }
+                  .contextMenu {
+                    Text("Policy — \(app.name)")
+                    Button("Use default (\(store.policy.rawValue))") { store.setPolicy(nil, forBundle: app.bundleID) }
+                    Divider()
+                    ForEach(Policy.allCases) { p in
+                      Button(p.rawValue + (store.appPolicy[app.bundleID] == p ? "  ✓" : "")) {
+                        store.setPolicy(p, forBundle: app.bundleID)
+                      }
+                    }
                   }
                 }
               }
@@ -99,6 +111,7 @@ struct AppCard: View {
   let app: InstalledApp
   let running: Bool
   let metrics: Metrics?
+  let override: Policy?
   let action: () -> Void
   @State private var hover = false
 
@@ -114,6 +127,11 @@ struct AppCard: View {
           }
         }
         Text(app.name).font(.callout).lineLimit(1).foregroundStyle(.primary)
+        if let override {
+          Text(override.rawValue).font(.system(size: 9, weight: .semibold))
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(Capsule().fill(Color.blue.opacity(0.22)))
+        }
         if running {
           Text(metrics.map { String(format: "%.0f%% · %.0f MB", $0.cpu, $0.memMB) } ?? "…")
             .font(.caption2).monospacedDigit().foregroundStyle(.green)
@@ -139,20 +157,20 @@ struct AppCard: View {
 struct InspectorView: View {
   @EnvironmentObject var store: Store
   @Environment(\.dismiss) private var dismiss
+  @State private var report = Traces.Report(activeSessions: 0, archives: 0, tempHomes: 0, vmClones: [])
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
-        Text("Activity").font(.headline)
-        Text("\(store.running.count) sandboxed").font(.caption).foregroundStyle(.secondary)
+        Text("Activity & traces").font(.headline)
+        Text("\(store.running.count) running").font(.caption).foregroundStyle(.secondary)
         Spacer()
         Button("Done") { dismiss() }
       }.padding()
       Divider()
       if store.running.isEmpty {
-        Spacer()
-        Text("No sandboxed apps running.").foregroundStyle(.secondary).frame(maxWidth: .infinity)
-        Spacer()
+        Text("No sandboxed apps running.").foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity).padding(.vertical, 22)
       } else {
         Table(store.runningSessions()) {
           TableColumn("App") { Text($0.name) }
@@ -161,12 +179,33 @@ struct InspectorView: View {
           TableColumn("Memory") { Text(String(format: "%.0f MB", $0.m.memMB)).monospacedDigit() }
           TableColumn("Disk I/O") { Text(String(format: "%.0f MB", $0.m.diskMB)).monospacedDigit() }
           TableColumn("Procs") { Text("\($0.m.procs)").monospacedDigit() }
-        }
+        }.frame(minHeight: 120)
       }
       Divider()
-      Text("cpu + memory + disk are summed across the whole process tree (Electron helpers included). Per-process network isn't exposed to unprivileged apps on macOS — it's enforced/visible only in the Paranoid VM.")
-        .font(.caption2).foregroundStyle(.secondary).padding(8)
+      VStack(alignment: .leading, spacing: 6) {
+        Text("On-disk footprint").font(.subheadline).bold()
+        HStack(spacing: 18) {
+          footprint("active stashes", report.activeSessions, safe: false)
+          footprint("commit archives", report.archives, safe: false)
+          footprint("temp homes", report.tempHomes, safe: true)
+          footprint("VM clones", report.vmClones.count, safe: true)
+          Spacer()
+          Button("Clean orphans") { Traces.purgeOrphans(); report = Traces.scan() }
+            .disabled(report.orphans == 0)
+        }
+        Text("Active stashes + archives are protected (they hold your real data). macOS's unified log still records native app launches — no unprivileged tool can suppress that; only the Paranoid VM keeps launches off the host log entirely.")
+          .font(.caption2).foregroundStyle(.secondary)
+      }.padding(12)
     }
-    .frame(width: 640, height: 380)
+    .frame(width: 660, height: 440)
+    .onAppear { report = Traces.scan() }
+  }
+
+  private func footprint(_ label: String, _ n: Int, safe: Bool) -> some View {
+    VStack(spacing: 2) {
+      Text("\(n)").font(.title3).monospacedDigit()
+        .foregroundStyle(n > 0 && safe ? .orange : .primary)
+      Text(label).font(.caption2).foregroundStyle(.secondary)
+    }
   }
 }

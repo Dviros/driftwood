@@ -45,6 +45,7 @@ final class Store: ObservableObject {
   @Published var running: Set<UUID> = []
   @Published var metrics: [UUID: Metrics] = [:]
   @Published var message = ""
+  @Published var appPolicy: [String: Policy] = [:]   // bundleID -> per-app override
 
   var vm: VMManager?              // set by the app; drives the Paranoid (VM) policy
   private var pidForApp: [UUID: pid_t] = [:]
@@ -54,6 +55,7 @@ final class Store: ObservableObject {
 
   init() {
     StateSwap.recoverAll()          // undo anything a crash left mid-session
+    loadAppPolicy()
     rescan()
     NSWorkspace.shared.notificationCenter.addObserver(
       self, selector: #selector(appTerminated(_:)),
@@ -76,7 +78,7 @@ final class Store: ObservableObject {
   // MARK: discovery
   func rescan() {
     let home = NSHomeDirectory()
-    let dirs = ["/Applications", "/Applications/Utilities",
+    let dirs = ["/Applications", "/Applications/Utilities", "/Applications/Setapp",
                 "/System/Applications", "/System/Applications/Utilities",
                 home + "/Applications"]
     let fm = FileManager.default
@@ -97,12 +99,23 @@ final class Store: ObservableObject {
   // MARK: lifecycle
   func toggle(_ app: InstalledApp) { isRunning(app) ? stop(app) : launch(app) }
 
+  func effectivePolicy(_ app: InstalledApp) -> Policy { appPolicy[app.bundleID] ?? policy }
+  func setPolicy(_ p: Policy?, forBundle bid: String) {
+    if let p { appPolicy[bid] = p } else { appPolicy.removeValue(forKey: bid) }
+    UserDefaults.standard.set(appPolicy.mapValues { $0.rawValue }, forKey: "appPolicy")
+  }
+  private func loadAppPolicy() {
+    if let raw = UserDefaults.standard.dictionary(forKey: "appPolicy") as? [String: String] {
+      appPolicy = raw.compactMapValues { Policy(rawValue: $0) }
+    }
+  }
+
   func launch(_ app: InstalledApp) {
     message = ""
     guard NSRunningApplication.runningApplications(withBundleIdentifier: app.bundleID).isEmpty else {
       message = "\(app.name) is already running — quit it first to sandbox it."; return
     }
-    switch policy {
+    switch effectivePolicy(app) {
     case .paranoid:
       guard let vm else { message = "VM engine unavailable."; return }
       vm.launch(appPath: app.path, appName: app.name)
