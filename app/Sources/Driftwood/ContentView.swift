@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
   @EnvironmentObject var store: Store
   @EnvironmentObject var vm: VMManager
+  @State private var showInspector = false
   private let cols = [GridItem(.adaptive(minimum: 142), spacing: 16)]
 
   var body: some View {
@@ -39,6 +40,7 @@ struct ContentView: View {
       }
     }
     .background(VisualEffect().ignoresSafeArea())
+    .sheet(isPresented: $showInspector) { InspectorView().environmentObject(store) }
   }
 
   private var header: some View {
@@ -53,6 +55,8 @@ struct ContentView: View {
       .pickerStyle(.segmented).frame(width: 240).help(store.policy.blurb)
       Toggle("Ask on close", isOn: $store.askOnClose).toggleStyle(.checkbox).controlSize(.small)
       TextField("Search", text: $store.query).textFieldStyle(.roundedBorder).frame(width: 150)
+      Button { showInspector = true } label: { Image(systemName: "chart.bar.xaxis") }
+        .buttonStyle(.borderless).help("Activity / inspector")
       Button { store.rescan() } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(.borderless)
     }
     .padding(.horizontal, 20).padding(.vertical, 12)
@@ -129,5 +133,40 @@ struct AppCard: View {
     .animation(.easeOut(duration: 0.15), value: hover)
     .animation(.easeOut(duration: 0.20), value: running)
     .help(app.path)
+  }
+}
+
+struct InspectorView: View {
+  @EnvironmentObject var store: Store
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack {
+        Text("Activity").font(.headline)
+        Text("\(store.running.count) sandboxed").font(.caption).foregroundStyle(.secondary)
+        Spacer()
+        Button("Done") { dismiss() }
+      }.padding()
+      Divider()
+      if store.running.isEmpty {
+        Spacer()
+        Text("No sandboxed apps running.").foregroundStyle(.secondary).frame(maxWidth: .infinity)
+        Spacer()
+      } else {
+        Table(store.runningSessions()) {
+          TableColumn("App") { Text($0.name) }
+          TableColumn("Policy") { Text($0.policy) }
+          TableColumn("CPU") { Text(String(format: "%.0f%%", $0.m.cpu)).monospacedDigit() }
+          TableColumn("Memory") { Text(String(format: "%.0f MB", $0.m.memMB)).monospacedDigit() }
+          TableColumn("Disk I/O") { Text(String(format: "%.0f MB", $0.m.diskMB)).monospacedDigit() }
+          TableColumn("Procs") { Text("\($0.m.procs)").monospacedDigit() }
+        }
+      }
+      Divider()
+      Text("cpu + memory + disk are summed across the whole process tree (Electron helpers included). Per-process network isn't exposed to unprivileged apps on macOS — it's enforced/visible only in the Paranoid VM.")
+        .font(.caption2).foregroundStyle(.secondary).padding(8)
+    }
+    .frame(width: 640, height: 380)
   }
 }

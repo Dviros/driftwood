@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Darwin
 
 enum Source: String, CaseIterable, Hashable {
   case appStore = "App Store"
@@ -33,7 +34,8 @@ struct InstalledApp: Identifiable, Hashable {
 
 struct AppGroup: Identifiable { let id: Source; let apps: [InstalledApp] }
 
-struct Metrics: Equatable { var cpu: Double = 0; var memMB: Double = 0 }
+struct Metrics: Equatable { var cpu = 0.0; var memMB = 0.0; var diskMB = 0.0; var procs = 0 }
+struct SessionRow: Identifiable { let id: UUID; let name: String; let policy: String; let m: Metrics }
 
 final class Store: ObservableObject {
   @Published var apps: [InstalledApp] = []
@@ -47,6 +49,7 @@ final class Store: ObservableObject {
   var vm: VMManager?              // set by the app; drives the Paranoid (VM) policy
   private var pidForApp: [UUID: pid_t] = [:]
   private var swapForApp: [UUID: StateSwap] = [:]
+  private var sessionPolicy: [UUID: Policy] = [:]
   private var timer: Timer?
 
   init() {
@@ -105,11 +108,13 @@ final class Store: ObservableObject {
       vm.launch(appPath: app.path, appName: app.name)
       message = vm.message
     case .persistent:
+      sessionPolicy[app.id] = .persistent
       openNative(app, swap: nil)
     case .casual:
       let sw = StateSwap(bundleID: app.bundleID, appName: app.name, sessionID: UUID().uuidString)
       sw.stash()
       swapForApp[app.id] = sw
+      sessionPolicy[app.id] = .casual
       openNative(app, swap: sw)
     }
   }
@@ -150,7 +155,7 @@ final class Store: ObservableObject {
 
   private func finish(_ appID: UUID) {
     guard running.contains(appID) else { return }
-    running.remove(appID); metrics[appID] = nil; pidForApp[appID] = nil
+    running.remove(appID); metrics[appID] = nil; pidForApp[appID] = nil; sessionPolicy[appID] = nil
     guard let sw = swapForApp[appID] else { return }
     swapForApp[appID] = nil
     if askOnClose { askKeepOrDiscard(appID, sw) } else { sw.restore() }
@@ -166,22 +171,63 @@ final class Store: ObservableObject {
   }
 
   // MARK: monitoring (main process; helper procs of Electron apps not summed yet)
+  // Sum the WHOLE process tree per app (Electron/Chromium spawn many helpers)
+  // for cpu + memory, and disk I/O via proc_pid_rusage.
   private func sample() {
-    guard !pidForApp.isEmpty else { return }
+    guard !pidForApp.isEmpty, let snap = psSnapshot() else { return }
     for (appID, pid) in pidForApp {
-      if let m = ps(pid) { metrics[appID] = m }
+      let tree = subtree(pid, children: snap.children)
+      var cpu = 0.0, rss = 0.0, disk: UInt64 = 0
+      for p in tree {
+        if let s = snap.stats[p] { cpu += s.cpu; rss += s.rss }
+        disk &+= Store.diskBytes(p)
+      }
+      metrics[appID] = Metrics(cpu: cpu, memMB: rss / 1024,
+                               diskMB: Double(disk) / 1_048_576, procs: tree.count)
     }
   }
-  private func ps(_ pid: pid_t) -> Metrics? {
+
+  private func psSnapshot() -> (stats: [pid_t: (cpu: Double, rss: Double)], children: [pid_t: [pid_t]])? {
     let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/ps")
-    p.arguments = ["-o", "%cpu=,rss=", "-p", "\(pid)"]
+    p.arguments = ["-axo", "pid=,ppid=,%cpu=,rss="]
     let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
     do { try p.run() } catch { return nil }
-    let out = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
-    let cols = (String(data: out, encoding: .utf8) ?? "")
-      .split(whereSeparator: { $0 == " " || $0 == "\n" }).map(String.init)
-    guard cols.count >= 2, let cpu = Double(cols[0]), let rss = Double(cols[1]) else { return nil }
-    return Metrics(cpu: cpu, memMB: rss / 1024)
+    let data = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+    guard let text = String(data: data, encoding: .utf8) else { return nil }
+    var stats: [pid_t: (Double, Double)] = [:]; var children: [pid_t: [pid_t]] = [:]
+    for line in text.split(separator: "\n") {
+      let f = line.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+      guard f.count >= 4, let pid = Int32(f[0]), let ppid = Int32(f[1]),
+            let cpu = Double(f[2]), let rss = Double(f[3]) else { continue }
+      stats[pid] = (cpu, rss)
+      children[ppid, default: []].append(pid)
+    }
+    return (stats, children)
+  }
+
+  private func subtree(_ root: pid_t, children: [pid_t: [pid_t]]) -> [pid_t] {
+    var out = [root], stack = [root]
+    while let n = stack.popLast() { for c in children[n] ?? [] { out.append(c); stack.append(c) } }
+    return out
+  }
+
+  static func diskBytes(_ pid: pid_t) -> UInt64 {
+    var ri = rusage_info_v4()
+    let ok = withUnsafeMutablePointer(to: &ri) { ptr in
+      ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+        proc_pid_rusage(pid, RUSAGE_INFO_V4, $0)
+      }
+    }
+    return ok == 0 ? (ri.ri_diskio_bytesread &+ ri.ri_diskio_byteswritten) : 0
+  }
+
+  func runningSessions() -> [SessionRow] {
+    running.compactMap { id -> SessionRow? in
+      guard let app = apps.first(where: { $0.id == id }) else { return nil }
+      return SessionRow(id: id, name: app.name,
+                        policy: sessionPolicy[id]?.rawValue ?? "—",
+                        m: metrics[id] ?? Metrics())
+    }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
   }
 
   // MARK: classification
