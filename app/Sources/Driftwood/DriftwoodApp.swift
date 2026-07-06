@@ -6,6 +6,7 @@ import SwiftUI
 @main
 struct DriftwoodApp: App {
   @StateObject private var store = Store()
+  @StateObject private var vm = VMManager()
   init() {
     if CommandLine.arguments.dropFirst().contains("selftest") { StateSwap.runSelfTest() }
   }
@@ -13,6 +14,8 @@ struct DriftwoodApp: App {
     WindowGroup {
       ContentView()
         .environmentObject(store)
+        .environmentObject(vm)
+        .onAppear { store.vm = vm; vm.refresh() }
         .frame(minWidth: 760, minHeight: 500)
     }
     .windowStyle(.hiddenTitleBar)

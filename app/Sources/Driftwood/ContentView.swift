@@ -2,12 +2,14 @@ import SwiftUI
 
 struct ContentView: View {
   @EnvironmentObject var store: Store
+  @EnvironmentObject var vm: VMManager
   private let cols = [GridItem(.adaptive(minimum: 142), spacing: 16)]
 
   var body: some View {
     VStack(spacing: 0) {
       header
       Divider().opacity(0.3)
+      goldenBar
       if !store.message.isEmpty {
         Text(store.message)
           .font(.caption).foregroundStyle(.orange)
@@ -55,6 +57,37 @@ struct ContentView: View {
     }
     .padding(.horizontal, 20).padding(.vertical, 12)
     .background(.ultraThinMaterial)
+  }
+
+  @ViewBuilder private var goldenBar: some View {
+    if store.policy == .paranoid {
+      HStack(spacing: 12) {
+        switch vm.state {
+        case .checking:
+          ProgressView().controlSize(.small)
+          Text("checking VM engine…").font(.caption)
+        case .noGolden:
+          Image(systemName: "cube.transparent").foregroundStyle(.blue)
+          Text("Paranoid runs each app in a disposable VM — needs a golden image once.").font(.caption)
+          Button("Download golden (~25 GB)") { vm.downloadGolden() }.controlSize(.small)
+        case .downloading(let p):
+          if p < 0 { ProgressView().controlSize(.small) } else { ProgressView(value: p).frame(width: 150) }
+          Text(p < 0 ? "starting…" : "\(Int(p * 100))%").font(.caption).monospacedDigit()
+          Button("Cancel") { vm.cancelDownload() }.controlSize(.small)
+        case .ready:
+          Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+          Text("Golden ready — apps open in a throwaway VM (rotated serial/MAC).").font(.caption)
+          Spacer(minLength: 8)
+          Text("Network").font(.caption).foregroundStyle(.secondary)
+          Picker("", selection: $vm.netMode) {
+            ForEach(NetMode.allCases) { Text($0.rawValue).tag($0) }
+          }.pickerStyle(.segmented).frame(width: 170)
+        }
+        Spacer()
+      }
+      .padding(.horizontal, 20).padding(.vertical, 8)
+      .background(.blue.opacity(0.06))
+    }
   }
 }
 

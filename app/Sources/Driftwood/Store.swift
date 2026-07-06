@@ -44,6 +44,7 @@ final class Store: ObservableObject {
   @Published var metrics: [UUID: Metrics] = [:]
   @Published var message = ""
 
+  var vm: VMManager?              // set by the app; drives the Paranoid (VM) policy
   private var pidForApp: [UUID: pid_t] = [:]
   private var swapForApp: [UUID: StateSwap] = [:]
   private var timer: Timer?
@@ -100,7 +101,9 @@ final class Store: ObservableObject {
     }
     switch policy {
     case .paranoid:
-      message = "Paranoid = disposable VM. Build a golden first: driftwood run --macos (see README)."
+      guard let vm else { message = "VM engine unavailable."; return }
+      vm.launch(appPath: app.path, appName: app.name)
+      message = vm.message
     case .persistent:
       openNative(app, swap: nil)
     case .casual:
