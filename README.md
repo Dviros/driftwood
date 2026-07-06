@@ -25,31 +25,76 @@
 
 ## driftwood.app — native launcher (GUI)
 
-A SwiftUI app (builds with **Command Line Tools only, no Xcode**) that lists your
-installed apps grouped by where they came from (App Store / System / User /
-Applications) and launches each under a chosen **policy**:
+A SwiftUI app that lists your installed apps grouped by source and launches each
+under a chosen **policy**. Builds with **Command Line Tools only — no Xcode**.
+
+![driftwood grid](docs/screenshots/grid.png)
+
+### Install & run
+
+```bash
+cd app
+./bundle.sh          # swift build -c release + wrap into driftwood.app (ad-hoc signed)
+open driftwood.app   # (move it to /Applications first to avoid the Downloads TCC prompt)
+```
+
+Requirements: Apple Silicon, macOS 13+. The **Paranoid** policy also needs
+[`tart`](https://github.com/cirruslabs/tart) (`brew install cirruslabs/cli/tart`)
+plus a one-time golden image — downloadable from inside the app.
+
+### Policies
 
 | Policy | What it does | Confines the app? |
 |---|---|---|
-| **Casual** | Native launch with a fresh throwaway profile — the app's `~/Library` state is stashed, then wiped or restored on close | no — ephemeral *state*, app runs normally |
+| **Casual** | Native launch with a fresh throwaway profile — the app's `~/Library` state is stashed, then wiped (or kept, with *Ask on close*) | no — ephemeral *state*, app runs normally |
 | **Persistent** | Normal launch; the app's changes are kept | no |
-| **Paranoid** | Disposable VM with rotated serial/MAC (needs a golden — see `--macos`) | **yes** |
+| **Paranoid** | Disposable macOS VM (linked clone, rotated serial + MAC), destroyed on close | **yes — full VM boundary** |
 
-```bash
-cd app && ./bundle.sh && open driftwood.app
-```
-
-Running cards show live **CPU % · memory**. **Ask on close** prompts to *keep*
-(prior profile archived, never deleted) or *discard* each session's data. Source
-in [`app/`](app/).
+Set a policy globally (top bar) or **per app** (right-click a card → policy;
+shown as a badge, persisted across launches).
 
 > **Why not just "sandbox" the process?** You can't retrofit a Seatbelt jail onto
-> an arbitrary GUI app — it re-launches via LaunchServices and escapes (verified).
-> Real confinement of a native app means a VM (**Paranoid**). **Casual** gives
-> ephemeral *state* — fresh cookies / prefs / UUIDs each run — not process
-> confinement. The stash/restore is journaled and crash-safe: a crash mid-session
-> is undone on next launch, and it never deletes real data without a stash to
-> replace it.
+> an arbitrary GUI app — it re-launches via LaunchServices and escapes (verified
+> with Athas). And App-Store / system apps keep state in `~/Library/Containers`,
+> which is TCC-locked, so **Casual only fully isolates non-sandboxed apps** (state
+> in `Application Support` / `Preferences`). Real confinement of *any* app = the
+> VM. The stash/restore is journaled and crash-safe: a crash mid-session is undone
+> on next launch, and it never deletes real data without a stash to replace it.
+
+### Paranoid: disposable VMs
+
+![Paranoid — disposable VM](docs/screenshots/paranoid.png)
+
+Select **Paranoid** and the top bar shows the VM controls:
+
+- **Download golden (~25 GB, once)** — pulls a macOS VM to your SSD. Every session
+  after is an instant APFS copy-on-write clone (≈ 0 extra disk).
+- **Network** — **Full** (shared NAT) or **Isolated** (softnet). *Split-tunnel /
+  offline are roadmap (need a gateway VM).*
+- Each launch: linked clone → rotate serial + MAC → boot → the app opens **inside
+  the VM** → the clone is **destroyed when you close the window**.
+
+**Your apps aren't in the VM** (it's a separate macOS). Two ways in:
+
+- **Self-contained apps** (Electron, direct downloads) are copied into the clone and opened — best-effort.
+- **App Store & system apps** must be installed once via **Manage golden** (boots
+  the golden read-write and opens the App Store — sign in, install, shut down).
+  They then run in every clone **without identity rotation**, because the receipt
+  is Apple-ID/machine-bound and rotating it would void it (exit 173). Signing in
+  links that golden to your Apple ID for those apps — there is **no anonymous way**
+  to run Store apps (their license is tied to your Apple ID, and the auth keys are
+  Secure-Enclave-bound and non-copyable).
+
+### Activity & traces
+
+The chart button opens the inspector: live **CPU / memory / disk I/O / process
+count** per running app (summed across the whole process tree, so Electron helpers
+count), plus driftwood's full **on-disk footprint** with a **Clean orphans** purge.
+Per-process network isn't exposed to unprivileged apps on macOS — it's
+enforced/visible only in the Paranoid VM, and macOS's unified log still records
+native launches (only the VM keeps launches off the host log entirely).
+
+Source in [`app/`](app/).
 
 ---
 
