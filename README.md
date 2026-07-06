@@ -47,7 +47,7 @@ driftwood run --linux <image> --dry-run       # print the exact command first
 Prereq: install Apple `container` (v1.0.0 signed `.pkg` from its Releases), then
 `container system start`.
 
-### Native macOS apps — experimental
+### Native macOS apps — needs a golden VM
 
 There is **no container for native macOS apps** — the only way to run a real
 `.app` ephemerally is a disposable macOS VM. `driftwood run --macos` clones a
@@ -65,19 +65,25 @@ driftwood run --macos macos-golden --app Notes --dry-run    # preview the lifecy
 
 ```bash
 brew install cirruslabs/cli/tart
-tart create --from-ipsw=latest macos-golden   # install a fresh macOS VM
-tart run macos-golden                         # boot once: make the 'admin' user, enable
-                                              # Remote Login (Settings > General > Sharing),
-                                              # harden, sign OUT of iCloud, then shut down
+
+# Fastest: a prebuilt image that already has an 'admin' user + Remote Login (SSH).
+tart clone ghcr.io/cirruslabs/macos-sequoia-vanilla:latest macos-golden
+
+# Or from scratch (interactive Setup Assistant): install macOS, create an 'admin'
+# user, enable Remote Login (Settings > General > Sharing), sign OUT of iCloud,
+# shut down.
+tart create --from-ipsw=latest macos-golden && tart run macos-golden
 ```
+
+Images are large (tens of GB); the first pull/install dominates setup time.
 
 **Honest limits of the macOS path:**
 
-- The guest **machine-identifier is inherited from the golden** (tart clones the
-  whole VM bundle). What actually rotates per run is the **MAC + hostname**. For
-  a fresh hardware identity, keep separate goldens or recreate from IPSW. In
-  practice this is fine: the guest can't use iCloud anyway, so app-level
-  fingerprinting sees a fresh MAC, hostname, and clean state each run.
+- Each run gets a **fresh MAC + serial number** (`tart set --random-mac
+  --random-serial`) on a copy-on-write clone (near-instant, ~no extra disk), so
+  the guest identity rotates per app. The guest still can't use iCloud (a
+  Virtualization.framework limit), so this defeats app/network fingerprinting,
+  not Apple first-party correlation.
 - Auto-launch needs **Remote Login (SSH) enabled** in the golden. Without it the
   VM still boots and self-destructs on close — you just open the app manually.
 - macOS guest VMs **cannot sign into iCloud/iMessage**, and macOS licensing caps

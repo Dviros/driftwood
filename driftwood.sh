@@ -147,44 +147,33 @@ run_linux() {
   exec container run --rm ${tty} --name "${name}" "${image}" "$@"
 }
 
-wait_for_tart_ip() {
-  local vm="$1" i ip
-  for i in $(seq 1 60); do
-    ip="$(tart ip "${vm}" 2>/dev/null || true)"
-    [[ -n "${ip}" ]] && { echo "${ip}"; return 0; }
-    sleep 2
-  done
-  return 1
-}
-
-# Native macOS app: clone a golden VM, rotate its MAC, launch ONE app inside,
-# destroy the clone when its window closes. EXPERIMENTAL — needs a prepared
-# golden with SSH enabled (see README). The guest machine-identifier is inherited
-# from the golden (tart limitation); MAC + hostname are what actually rotate.
+# Native macOS app: clone a golden VM, rotate its identity (MAC + serial),
+# launch ONE app inside, destroy the clone when its window closes.
+# Needs a prepared golden with Remote Login enabled (see README).
 run_macos() {
   local golden="$1" app="$2" rotate="$3" keep="$4"
   [[ -n "${golden}" && -n "${app}" ]] || die "run --macos needs <golden> and --app <name>"
   local clone="dw-$(openssl rand -hex 4)" user="${DRIFTWOOD_VM_USER:-admin}"
   if (( DRY )); then
     echo "+ tart clone ${golden} ${clone}"
-    (( rotate )) && echo "+ tart set ${clone} --random-mac"
-    echo "+ tart run ${clone} &                     # VM window"
-    echo "+ ssh ${user}@<ip> \"open -a '${app}'\"     # launch app inside"
-    (( keep )) || echo "+ tart delete ${clone}        # when the window closes"
+    (( rotate )) && echo "+ tart set ${clone} --random-mac --random-serial"
+    echo "+ tart run ${clone} &                       # VM window"
+    echo "+ ip=\$(tart ip ${clone} --wait 90)"
+    echo "+ ssh ${user}@\${ip} \"open -a '${app}'\"      # launch app inside"
+    (( keep )) || echo "+ tart delete ${clone}          # when the window closes"
     return 0
   fi
   need tart "brew install cirruslabs/cli/tart"
   local cleanup="tart delete '${clone}' >/dev/null 2>&1 || true"
   (( keep )) && cleanup=":"
   trap "${cleanup}" EXIT INT TERM
-  log "EXPERIMENTAL: clone ${golden} -> ${clone}"
+  log "clone ${golden} -> ${clone}"
   tart clone "${golden}" "${clone}"
-  (( rotate )) && { tart set "${clone}" --random-mac 2>/dev/null \
-    || log "note: 'tart set --random-mac' not supported here; the fresh clone MAC still applies"; }
+  (( rotate )) && { tart set "${clone}" --random-mac --random-serial || log "note: identity rotation failed"; }
   tart run "${clone}" &
   local vm=$!
-  local ip
-  ip="$(wait_for_tart_ip "${clone}")" \
+  local ip; ip="$(tart ip "${clone}" --wait 90 2>/dev/null || true)"
+  [[ -n "${ip}" ]] \
     || { log "VM never got an IP; close the window to clean up"; wait "${vm}" 2>/dev/null || true; return 1; }
   log "VM ${clone} up @ ${ip}; launching '${app}'. Close the VM window to destroy it."
   ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${user}@${ip}" \
