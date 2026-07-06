@@ -1,8 +1,9 @@
 import SwiftUI
 
-// Native launcher: shows your installed apps and runs each in a disposable
-// Seatbelt sandbox (fresh throwaway $HOME, wiped on close). No macros, so it
-// builds with Command Line Tools alone — no full Xcode required.
+// Native launcher: lists installed apps and runs each under a policy — Casual
+// (ephemeral ~/Library state-swap), Persistent (plain launch), or Paranoid
+// (disposable macOS VM). No macros, so it builds with Command Line Tools alone
+// — no full Xcode required.
 @main
 struct DriftwoodApp: App {
   @StateObject private var store = Store()
