@@ -118,7 +118,7 @@ final class Store: ObservableObject {
     switch effectivePolicy(app) {
     case .paranoid:
       guard let vm else { message = "VM engine unavailable."; return }
-      vm.launch(appPath: app.path, appName: app.name)
+      vm.launch(appPath: app.path, appName: app.name, isAppStore: app.source == .appStore)
       message = vm.message
     case .persistent:
       sessionPolicy[app.id] = .persistent

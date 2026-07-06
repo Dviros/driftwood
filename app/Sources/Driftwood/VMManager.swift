@@ -69,11 +69,14 @@ final class VMManager: ObservableObject {
   /// Disposable session: linked clone → rotate serial+MAC → boot → launch the
   /// app INSIDE the guest (by name if it's in the golden, else copy the bundle
   /// in) → destroy on window close. Verified: SSH `open -a` launches guest apps.
-  func launch(appPath: String, appName: String) {
+  func launch(appPath: String, appName: String, isAppStore: Bool) {
     guard state == .ready else { message = "Download the golden image first."; return }
     let clone = "dw-" + UUID().uuidString.prefix(8)
     guard run(["clone", Self.golden, clone]) != nil else { message = "Linked clone failed."; return }
-    _ = run(["set", clone, "--random-mac", "--random-serial"])
+    // App Store receipts are bound to the machine identity — rotating it makes
+    // strict apps reject the receipt (exit 173). Keep the golden's identity for
+    // those; rotate for everything else.
+    if !isAppStore { _ = run(["set", clone, "--random-mac", "--random-serial"]) }
 
     let p = Process()
     p.executableURL = URL(fileURLWithPath: tart)
@@ -90,26 +93,33 @@ final class VMManager: ObservableObject {
         DispatchQueue.main.async { self.message = "VM up but no network yet — open \(appName) from inside the VM." }
         return
       }
-      let bundle = (appPath as NSString).lastPathComponent
-      var ok = self.ssh(ip, "open -a \"\(appName)\" && echo DW_OK")   // already in the golden?
-      if !ok {                                                        // else copy the bundle in
+      var ok = self.ssh(ip, "open -a \"\(appName)\" && echo DW_OK")   // installed in the golden?
+      if !ok && !isAppStore {                                          // copy in (non-MAS only)
         _ = self.scp(ip, appPath)
-        ok = self.ssh(ip, "open \"/Users/admin/\(bundle)\" && echo DW_OK")
+        ok = self.ssh(ip, "open \"/Users/admin/\((appPath as NSString).lastPathComponent)\" && echo DW_OK")
       }
       DispatchQueue.main.async {
-        self.message = ok
-          ? "\(appName) launched inside disposable VM \(clone) (\(self.netMode.rawValue) net)."
-          : "\(appName) wouldn't run in the guest — App Store & system-dependent apps must be installed in the golden (Manage golden)."
+        if ok {
+          self.message = "\(appName) launched inside disposable VM \(clone) (\(self.netMode.rawValue) net)."
+        } else if isAppStore {
+          self.message = "\(appName) isn't in the golden yet — click ‘Manage golden’, sign into the App Store, install it, then shut down. Clones will run it."
+        } else {
+          self.message = "\(appName) wouldn't run in the guest — install it in the golden (Manage golden)."
+        }
       }
     }
   }
 
-  /// Open the golden read-write so the user can install their apps once; every
-  /// disposable clone then has them.
+  /// Open the golden read-write and land on the App Store so the user installs
+  /// their apps once; every disposable clone then has them (receipt included).
   func manageGolden() {
     let p = Process(); p.executableURL = URL(fileURLWithPath: tart); p.arguments = ["run", Self.golden]
-    do { try p.run(); message = "Golden opened read-write. Install your apps, then shut it down." }
-    catch { message = "Couldn't open the golden." }
+    do { try p.run() } catch { message = "Couldn't open the golden."; return }
+    message = "Golden booting — the App Store will open. Sign in, install your apps, then shut it down."
+    DispatchQueue.global().async { [weak self] in
+      guard let self, let ip = self.waitIP(Self.golden) else { return }
+      _ = self.ssh(ip, "open -a \"App Store\"")
+    }
   }
 
   private func waitIP(_ clone: String) -> String? {
