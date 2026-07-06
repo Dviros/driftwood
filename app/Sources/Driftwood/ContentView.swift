@@ -93,6 +93,7 @@ struct ContentView: View {
         case .ready:
           Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
           Text("Golden ready — apps open in a throwaway VM (rotated serial/MAC).").font(.caption)
+          Button("Manage golden") { vm.manageGolden() }.controlSize(.small)
           Spacer(minLength: 8)
           Text("Network").font(.caption).foregroundStyle(.secondary)
           Picker("", selection: $vm.netMode) {

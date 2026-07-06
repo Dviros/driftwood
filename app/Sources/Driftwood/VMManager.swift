@@ -66,9 +66,9 @@ final class VMManager: ObservableObject {
     refresh()
   }
 
-  /// Disposable session: linked clone → rotate serial+MAC → mount the app → run
-  /// → destroy on window close. EXPERIMENTAL: whether a host .app runs from the
-  /// mounted share depends on the app (frameworks / signing / installers).
+  /// Disposable session: linked clone → rotate serial+MAC → boot → launch the
+  /// app INSIDE the guest (by name if it's in the golden, else copy the bundle
+  /// in) → destroy on window close. Verified: SSH `open -a` launches guest apps.
   func launch(appPath: String, appName: String) {
     guard state == .ready else { message = "Download the golden image first."; return }
     let clone = "dw-" + UUID().uuidString.prefix(8)
@@ -77,12 +77,68 @@ final class VMManager: ObservableObject {
 
     let p = Process()
     p.executableURL = URL(fileURLWithPath: tart)
-    p.arguments = ["run"] + netMode.runArgs + ["--dir=app:\(appPath):ro", clone]
+    p.arguments = ["run"] + netMode.runArgs + [clone]
     p.terminationHandler = { [weak self] _ in
       DispatchQueue.global().async { _ = self?.run(["delete", clone]) }   // destroy on close
     }
-    do { try p.run(); message = "Launched \(appName) in a disposable VM (\(netMode.rawValue) net)." }
-    catch { _ = run(["delete", clone]); message = "Couldn't start the VM." }
+    do { try p.run() } catch { _ = run(["delete", clone]); message = "Couldn't start the VM."; return }
+    message = "Booting a disposable VM for \(appName)…"
+
+    DispatchQueue.global().async { [weak self] in
+      guard let self else { return }
+      guard let ip = self.waitIP(clone) else {
+        DispatchQueue.main.async { self.message = "VM up but no network yet — open \(appName) from inside the VM." }
+        return
+      }
+      let bundle = (appPath as NSString).lastPathComponent
+      var ok = self.ssh(ip, "open -a \"\(appName)\" && echo DW_OK")   // already in the golden?
+      if !ok {                                                        // else copy the bundle in
+        _ = self.scp(ip, appPath)
+        ok = self.ssh(ip, "open \"/Users/admin/\(bundle)\" && echo DW_OK")
+      }
+      DispatchQueue.main.async {
+        self.message = ok
+          ? "\(appName) launched inside disposable VM \(clone) (\(self.netMode.rawValue) net)."
+          : "\(appName) wouldn't run in the guest — App Store & system-dependent apps must be installed in the golden (Manage golden)."
+      }
+    }
+  }
+
+  /// Open the golden read-write so the user can install their apps once; every
+  /// disposable clone then has them.
+  func manageGolden() {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: tart); p.arguments = ["run", Self.golden]
+    do { try p.run(); message = "Golden opened read-write. Install your apps, then shut it down." }
+    catch { message = "Couldn't open the golden." }
+  }
+
+  private func waitIP(_ clone: String) -> String? {
+    let ip = run(["ip", clone, "--wait", "120"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return (ip?.isEmpty == false) ? ip : nil
+  }
+  @discardableResult private func ssh(_ ip: String, _ remote: String) -> Bool {
+    expectRun("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null admin@\(ip) {\(remote)}").contains("DW_OK")
+  }
+  @discardableResult private func scp(_ ip: String, _ path: String) -> Bool {
+    let out = expectRun("scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r \"\(path)\" admin@\(ip):/Users/admin/")
+    return !out.lowercased().contains("denied")
+  }
+  private func expectRun(_ spawnLine: String) -> String {
+    let script = """
+    set timeout 90
+    spawn \(spawnLine)
+    expect {
+      -re {[Pp]assword:} { send \"admin\\r\"; exp_continue }
+      -re {yes/no} { send \"yes\\r\"; exp_continue }
+      timeout { exit 1 }
+      eof
+    }
+    """
+    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/expect"); p.arguments = ["-c", script]
+    let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+    do { try p.run() } catch { return "" }
+    let d = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+    return String(data: d, encoding: .utf8) ?? ""
   }
 
   // MARK: helpers
