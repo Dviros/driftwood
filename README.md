@@ -23,6 +23,22 @@
 
 ---
 
+## driftwood.app — native launcher (GUI)
+
+A SwiftUI app that shows your installed apps in a glass grid and runs each one in
+the `--sandboxed` jail (fresh throwaway `$HOME`, wiped when you close it). Builds
+with **Command Line Tools only — no Xcode needed**.
+
+```bash
+cd app && ./bundle.sh && open driftwood.app
+```
+
+Click an app to launch it sandboxed; its card glows green while it runs; click
+again to kill it and wipe its throwaway home. The **No network** switch applies
+`--no-net` to the next launch. Source in [`app/`](app/).
+
+---
+
 ## Quickstart
 
 ```bash
