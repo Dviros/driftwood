@@ -25,17 +25,31 @@
 
 ## driftwood.app — native launcher (GUI)
 
-A SwiftUI app that shows your installed apps in a glass grid and runs each one in
-the `--sandboxed` jail (fresh throwaway `$HOME`, wiped when you close it). Builds
-with **Command Line Tools only — no Xcode needed**.
+A SwiftUI app (builds with **Command Line Tools only, no Xcode**) that lists your
+installed apps grouped by where they came from (App Store / System / User /
+Applications) and launches each under a chosen **policy**:
+
+| Policy | What it does | Confines the app? |
+|---|---|---|
+| **Casual** | Native launch with a fresh throwaway profile — the app's `~/Library` state is stashed, then wiped or restored on close | no — ephemeral *state*, app runs normally |
+| **Persistent** | Normal launch; the app's changes are kept | no |
+| **Paranoid** | Disposable VM with rotated serial/MAC (needs a golden — see `--macos`) | **yes** |
 
 ```bash
 cd app && ./bundle.sh && open driftwood.app
 ```
 
-Click an app to launch it sandboxed; its card glows green while it runs; click
-again to kill it and wipe its throwaway home. The **No network** switch applies
-`--no-net` to the next launch. Source in [`app/`](app/).
+Running cards show live **CPU % · memory**. **Ask on close** prompts to *keep*
+(prior profile archived, never deleted) or *discard* each session's data. Source
+in [`app/`](app/).
+
+> **Why not just "sandbox" the process?** You can't retrofit a Seatbelt jail onto
+> an arbitrary GUI app — it re-launches via LaunchServices and escapes (verified).
+> Real confinement of a native app means a VM (**Paranoid**). **Casual** gives
+> ephemeral *state* — fresh cookies / prefs / UUIDs each run — not process
+> confinement. The stash/restore is journaled and crash-safe: a crash mid-session
+> is undone on next launch, and it never deletes real data without a stash to
+> replace it.
 
 ---
 
