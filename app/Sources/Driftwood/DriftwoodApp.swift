@@ -6,6 +6,9 @@ import SwiftUI
 @main
 struct DriftwoodApp: App {
   @StateObject private var store = Store()
+  init() {
+    if CommandLine.arguments.dropFirst().contains("selftest") { StateSwap.runSelfTest() }
+  }
   var body: some Scene {
     WindowGroup {
       ContentView()

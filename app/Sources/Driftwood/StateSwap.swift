@@ -16,7 +16,8 @@ struct StateSwap {
   let appName: String
   let sessionID: String
 
-  private let lib = NSHomeDirectory() + "/Library"
+  var libRoot = NSHomeDirectory() + "/Library"   // overridable for the self-test
+  private var lib: String { libRoot }
   private var root: String { lib + "/Application Support/driftwood" }
   private var sessionDir: String { root + "/sessions/" + sessionID }
   private var journalPath: String { sessionDir + "/journal.json" }
@@ -84,6 +85,7 @@ struct StateSwap {
 
   // cfprefsd caches preferences and would rewrite the plist we moved; bounce it.
   private func flushPrefsCache() {
+    guard libRoot == NSHomeDirectory() + "/Library" else { return }   // never during self-test
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
     p.arguments = ["cfprefsd"]
@@ -105,5 +107,35 @@ struct StateSwap {
     guard let d = try? Data(contentsOf: URL(fileURLWithPath: journalPath)),
           let j = try? JSONSerialization.jsonObject(with: d) as? [[String: String]] else { return [] }
     return j
+  }
+
+  // Headless check of the data-critical primitive against synthetic dirs
+  // (run: `Driftwood selftest`). Never touches the real ~/Library.
+  static func runSelfTest() {
+    let fm = FileManager.default
+    let lib = NSTemporaryDirectory() + "dw-selftest-" + UUID().uuidString + "/Library"
+    let pref = lib + "/Preferences/com.test.app.plist"
+    let data = lib + "/Application Support/TestApp/data.txt"
+    try? fm.createDirectory(atPath: lib + "/Preferences", withIntermediateDirectories: true)
+    try? fm.createDirectory(atPath: lib + "/Application Support/TestApp", withIntermediateDirectories: true)
+    try? "REAL".write(toFile: pref, atomically: true, encoding: .utf8)
+    try? "REAL".write(toFile: data, atomically: true, encoding: .utf8)
+
+    var sw = StateSwap(bundleID: "com.test.app", appName: "TestApp", sessionID: "selftest")
+    sw.libRoot = lib
+    let stashed = sw.stash()
+    let fresh = !fm.fileExists(atPath: pref) && !fm.fileExists(atPath: data)   // app sees empty state
+    try? "SESSION".write(toFile: pref, atomically: true, encoding: .utf8)      // app writes its own
+    try? fm.createDirectory(atPath: lib + "/Application Support/TestApp", withIntermediateDirectories: true)
+    try? "SESSION".write(toFile: data, atomically: true, encoding: .utf8)
+    sw.restore()                                                               // ephemeral: revert
+    let ok = (try? String(contentsOfFile: pref)) == "REAL"
+          && (try? String(contentsOfFile: data)) == "REAL"
+    try? fm.removeItem(atPath: NSString(string: lib).deletingLastPathComponent)
+
+    let pass = stashed && fresh && ok
+    FileHandle.standardError.write(
+      "SELFTEST stashed=\(stashed) fresh=\(fresh) restored=\(ok) => \(pass ? "PASS" : "FAIL")\n".data(using: .utf8)!)
+    exit(pass ? 0 : 1)
   }
 }
