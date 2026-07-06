@@ -139,11 +139,12 @@ cmd_uninstall() {
 run_linux() {
   local image="$1"; shift || true
   [[ -n "${image}" ]] || die "run --linux needs an image (e.g. ubuntu)"
-  local name="dw-$(openssl rand -hex 4)"
-  if (( DRY )); then echo "+ container run --rm -it --name ${name} ${image} $*"; return 0; fi
+  local name="dw-$(openssl rand -hex 4)" tty=""
+  [[ -t 0 && -t 1 ]] && tty="-i -t"   # interactive only when attached to a terminal
+  if (( DRY )); then echo "+ container run --rm ${tty:--i -t} --name ${name} ${image} $*"; return 0; fi
   need container "install Apple's runtime: https://github.com/apple/container/releases"
   log "ephemeral linux container ${name} <- ${image} (dies + rotates on exit)"
-  exec container run --rm -it --name "${name}" "${image}" "$@"
+  exec container run --rm ${tty} --name "${name}" "${image}" "$@"
 }
 
 wait_for_tart_ip() {
