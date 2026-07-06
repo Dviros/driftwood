@@ -10,6 +10,8 @@
 # APNs push token, serial, or IOPlatformUUID. See README for why.
 #
 # Subcommands: now | install | uninstall | status | selfcheck   [--dry-run]
+#   run --linux <image> [-- cmd...]          ephemeral Linux app (Apple container)
+#   run --macos <golden> --app <name>        ephemeral native macOS app (tart VM)
 set -euo pipefail
 
 # ---- config (env-overridable; install bakes these into the LaunchDaemon) ----
@@ -27,6 +29,7 @@ DRY=0
 log()  { echo "$(/bin/date '+%Y-%m-%dT%H:%M:%S') $*"; }
 die()  { echo "driftwood: $*" >&2; exit 1; }
 need_root() { [[ ${EUID} -eq 0 ]] || die "run as root (sudo)"; }
+need()      { command -v "$1" >/dev/null 2>&1 || die "missing '$1' — $2"; }
 
 # ---- generators ----
 new_hostname() { echo "${HOSTNAME_PREFIX}-$(openssl rand -hex 4)"; }
@@ -130,14 +133,95 @@ cmd_uninstall() {
   echo "uninstalled"
 }
 
-# ---- arg parse ----
-CMD=""
-for a in "$@"; do
-  case "${a}" in
-    --dry-run) DRY=1 ;;
-    now|install|uninstall|status|selfcheck) CMD="${a}" ;;
-    -h|--help) grep '^# ' "${SELF}" | sed 's/^# //'; exit 0 ;;
-    *) die "unknown arg: ${a}" ;;
+# ---- disposable per-app sandboxes ----
+# Linux app: Apple `container` gives each one its own micro-VM + IP + MAC; --rm
+# destroys it on exit. Fully ephemeral, identity fresh per run.
+run_linux() {
+  local image="$1"; shift || true
+  [[ -n "${image}" ]] || die "run --linux needs an image (e.g. ubuntu)"
+  local name="dw-$(openssl rand -hex 4)"
+  if (( DRY )); then echo "+ container run --rm -it --name ${name} ${image} $*"; return 0; fi
+  need container "install Apple's runtime: https://github.com/apple/container/releases"
+  log "ephemeral linux container ${name} <- ${image} (dies + rotates on exit)"
+  exec container run --rm -it --name "${name}" "${image}" "$@"
+}
+
+wait_for_tart_ip() {
+  local vm="$1" i ip
+  for i in $(seq 1 60); do
+    ip="$(tart ip "${vm}" 2>/dev/null || true)"
+    [[ -n "${ip}" ]] && { echo "${ip}"; return 0; }
+    sleep 2
+  done
+  return 1
+}
+
+# Native macOS app: clone a golden VM, rotate its MAC, launch ONE app inside,
+# destroy the clone when its window closes. EXPERIMENTAL — needs a prepared
+# golden with SSH enabled (see README). The guest machine-identifier is inherited
+# from the golden (tart limitation); MAC + hostname are what actually rotate.
+run_macos() {
+  local golden="$1" app="$2" rotate="$3" keep="$4"
+  [[ -n "${golden}" && -n "${app}" ]] || die "run --macos needs <golden> and --app <name>"
+  local clone="dw-$(openssl rand -hex 4)" user="${DRIFTWOOD_VM_USER:-admin}"
+  if (( DRY )); then
+    echo "+ tart clone ${golden} ${clone}"
+    (( rotate )) && echo "+ tart set ${clone} --random-mac"
+    echo "+ tart run ${clone} &                     # VM window"
+    echo "+ ssh ${user}@<ip> \"open -a '${app}'\"     # launch app inside"
+    (( keep )) || echo "+ tart delete ${clone}        # when the window closes"
+    return 0
+  fi
+  need tart "brew install cirruslabs/cli/tart"
+  local cleanup="tart delete '${clone}' >/dev/null 2>&1 || true"
+  (( keep )) && cleanup=":"
+  trap "${cleanup}" EXIT INT TERM
+  log "EXPERIMENTAL: clone ${golden} -> ${clone}"
+  tart clone "${golden}" "${clone}"
+  (( rotate )) && { tart set "${clone}" --random-mac 2>/dev/null \
+    || log "note: 'tart set --random-mac' not supported here; the fresh clone MAC still applies"; }
+  tart run "${clone}" &
+  local vm=$!
+  local ip
+  ip="$(wait_for_tart_ip "${clone}")" \
+    || { log "VM never got an IP; close the window to clean up"; wait "${vm}" 2>/dev/null || true; return 1; }
+  log "VM ${clone} up @ ${ip}; launching '${app}'. Close the VM window to destroy it."
+  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "${user}@${ip}" \
+      "open -a '${app}'" 2>/dev/null || log "note: auto-launch failed; open '${app}' from the VM desktop"
+  wait "${vm}" 2>/dev/null || true   # blocks until the window closes -> trap destroys the clone
+}
+
+cmd_run() {
+  local backend="" target="" app="" rotate=1 keep=0
+  local -a rest=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --linux) backend=linux ;;
+      --macos) backend=macos ;;
+      --app) app="${2:-}"; shift ;;
+      --no-rotate) rotate=0 ;;
+      --keep) keep=1 ;;
+      --dry-run) DRY=1 ;;
+      --) shift; rest=("$@"); break ;;
+      -*) die "run: unknown flag $1" ;;
+      *) [[ -z "${target}" ]] && target="$1" || rest+=("$1") ;;
+    esac
+    shift || true
+  done
+  case "${backend}" in
+    linux) run_linux "${target}" ${rest[@]+"${rest[@]}"} ;;
+    macos) run_macos "${target}" "${app}" "${rotate}" "${keep}" ;;
+    *) die "run: use  --linux <image> [-- cmd...]  OR  --macos <golden> --app <name>" ;;
   esac
-done
-"cmd_${CMD:-now}"
+}
+
+# ---- dispatch ----
+CMD="${1:-now}"; [[ $# -gt 0 ]] && shift
+case "${CMD}" in
+  now|install|uninstall|status|selfcheck)
+    for a in "$@"; do [[ "${a}" == "--dry-run" ]] && DRY=1; done
+    "cmd_${CMD}" ;;
+  run) cmd_run "$@" ;;
+  -h|--help) grep '^# ' "${SELF}" | sed 's/^# //'; exit 0 ;;
+  *) die "unknown command: ${CMD} (try: now install uninstall status selfcheck run)" ;;
+esac

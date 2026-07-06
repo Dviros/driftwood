@@ -19,10 +19,69 @@ aggressive rotation into disposable per-app VMs/containers (Qubes/Whonix style).
 sudo ./driftwood.sh now         # rotate hostnames once, now
 sudo DRIFTWOOD_INTERVAL_HOURS=6 DRIFTWOOD_ROTATE_MAC=1 ./driftwood.sh install
 sudo ./driftwood.sh uninstall
+
+./driftwood.sh run --linux ubuntu -- bash           # throwaway Linux app box
+./driftwood.sh run --macos golden --app Safari       # throwaway native macOS app (experimental)
 ```
 
 `install` drops a root `LaunchDaemon` (`com.driftwood.rotate`) that fires every
 `DRIFTWOOD_INTERVAL_HOURS` (default 6) and on boot.
+
+---
+
+## Disposable per-app sandboxes: `driftwood run`
+
+Run a single app in a throwaway sandbox that is **destroyed and re-identified on
+exit**. This is the operational version of the VM model below — two backends.
+
+### Linux apps — fully working
+
+Apple's [`container`](https://github.com/apple/container) gives every container
+its own micro-VM, IP, and MAC; `--rm` deletes it on exit.
+
+```bash
+driftwood run --linux ubuntu -- bash          # fresh box; gone when you exit
+driftwood run --linux <image> --dry-run       # print the exact command first
+```
+
+Prereq: install Apple `container` (v1.0.0 signed `.pkg` from its Releases), then
+`container system start`.
+
+### Native macOS apps — experimental
+
+There is **no container for native macOS apps** — the only way to run a real
+`.app` ephemerally is a disposable macOS VM. `driftwood run --macos` clones a
+golden VM, rotates its MAC, launches one app, and **deletes the clone when you
+close the VM window**.
+
+```bash
+driftwood run --macos macos-golden --app Safari
+driftwood run --macos macos-golden --app Notes --dry-run    # preview the lifecycle
+#   flags:  --no-rotate  (keep the MAC)      --keep  (don't destroy on exit)
+#   env:    DRIFTWOOD_VM_USER  (guest SSH user; default 'admin')
+```
+
+**Prepare the golden once** (Apple Silicon; needs [`tart`](https://github.com/cirruslabs/tart)):
+
+```bash
+brew install cirruslabs/cli/tart
+tart create --from-ipsw=latest macos-golden   # install a fresh macOS VM
+tart run macos-golden                         # boot once: make the 'admin' user, enable
+                                              # Remote Login (Settings > General > Sharing),
+                                              # harden, sign OUT of iCloud, then shut down
+```
+
+**Honest limits of the macOS path:**
+
+- The guest **machine-identifier is inherited from the golden** (tart clones the
+  whole VM bundle). What actually rotates per run is the **MAC + hostname**. For
+  a fresh hardware identity, keep separate goldens or recreate from IPSW. In
+  practice this is fine: the guest can't use iCloud anyway, so app-level
+  fingerprinting sees a fresh MAC, hostname, and clean state each run.
+- Auto-launch needs **Remote Login (SSH) enabled** in the golden. Without it the
+  VM still boots and self-destructs on close — you just open the app manually.
+- macOS guest VMs **cannot sign into iCloud/iMessage**, and macOS licensing caps
+  ~2 concurrent macOS VMs per host. The `--linux` backend is unlimited.
 
 ---
 
