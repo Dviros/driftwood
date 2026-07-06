@@ -12,12 +12,14 @@
 # Subcommands: now | install | uninstall | status | selfcheck   [--dry-run]
 #   run --linux <image> [-- cmd...]          ephemeral Linux app (Apple container)
 #   run --macos <golden> --app <name>        ephemeral native macOS app (tart VM)
+#   run --sandboxed <app> [--no-net]         native macOS app, Seatbelt-confined, throwaway $HOME
 set -euo pipefail
 
 # ---- config (env-overridable; install bakes these into the LaunchDaemon) ----
 INTERVAL_HOURS="${DRIFTWOOD_INTERVAL_HOURS:-6}"   # how often the daemon fires
 ROTATE_MAC="${DRIFTWOOD_ROTATE_MAC:-0}"           # 1 = also rotate Wi-Fi MAC
 HOSTNAME_PREFIX="${DRIFTWOOD_PREFIX:-Mac}"        # hostname prefix
+REAL_HOME="${HOME}"                               # captured before --sandboxed overrides HOME
 
 LABEL="com.driftwood.rotate"
 PLIST="/Library/LaunchDaemons/${LABEL}.plist"
@@ -181,15 +183,63 @@ run_macos() {
   wait "${vm}" 2>/dev/null || true   # blocks until the window closes -> trap destroys the clone
 }
 
+# Resolve an app name / .app path / binary path to an executable to sandbox.
+resolve_app_binary() {
+  local a="$1" appdir="" exe=""
+  if [[ -f "${a}" && -x "${a}" ]]; then echo "${a}"; return 0; fi
+  if   [[ "${a}" == *.app ]];                    then appdir="${a}"
+  elif [[ -d "/Applications/${a}.app" ]];        then appdir="/Applications/${a}.app"
+  elif [[ -d "/System/Applications/${a}.app" ]]; then appdir="/System/Applications/${a}.app"
+  else return 1; fi
+  [[ -d "${appdir}" ]] || return 1
+  exe="$(defaults read "${appdir}/Contents/Info" CFBundleExecutable 2>/dev/null)" || exe="$(basename "${appdir}" .app)"
+  local bin="${appdir}/Contents/MacOS/${exe}"
+  [[ -x "${bin}" ]] && { echo "${bin}"; return 0; }
+  return 1
+}
+
+# Native macOS app, NO VM: run it under a Seatbelt profile with a throwaway
+# $HOME (wiped on exit) and optionally no network. Rotates app-level state,
+# NOT the hardware serial (the app still sees the host's real serial).
+# sandbox-exec is deprecated-but-present; best for CLI + simple apps.
+run_sandboxed() {
+  local app="$1" nonet="$2" keep="$3"; shift 3 || true
+  [[ -n "${app}" ]] || die "run --sandboxed needs an app name, .app path, or binary path"
+  local bin; bin="$(resolve_app_binary "${app}")" || die "couldn't resolve '${app}' — pass a full path to the .app or binary"
+  local home; home="$(mktemp -d "${TMPDIR:-/tmp}/dw-sbx.XXXXXX")"
+  local prof="${home}/profile.sb"
+  {
+    echo '(version 1)'
+    echo '(allow default)'
+    echo "(deny file-write* (subpath \"${REAL_HOME}\"))"
+    (( nonet )) && echo '(deny network*)'
+  } > "${prof}"
+  if (( DRY )); then
+    echo "+ HOME=${home} sandbox-exec -f ${prof} ${bin} $*"
+    (( nonet )) && echo "  # network denied"
+    (( keep )) || echo "+ rm -rf ${home}   # on exit"
+    rm -rf "${home}"; return 0
+  fi
+  need sandbox-exec "ships with macOS at /usr/bin/sandbox-exec"
+  local cleanup="rm -rf '${home}'"
+  (( keep )) && cleanup="echo 'kept ${home}'"
+  trap "${cleanup}" EXIT INT TERM
+  local netmsg=""; (( nonet )) && netmsg=", no network"
+  log "sandboxed '${app}' (${bin##*/}); throwaway HOME=${home}${netmsg}"
+  HOME="${home}" sandbox-exec -f "${prof}" "${bin}" "$@" || true
+}
+
 cmd_run() {
-  local backend="" target="" app="" rotate=1 keep=0
+  local backend="" target="" app="" rotate=1 keep=0 nonet=0
   local -a rest=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --linux) backend=linux ;;
       --macos) backend=macos ;;
+      --sandboxed) backend=sandboxed ;;
       --app) app="${2:-}"; shift ;;
       --no-rotate) rotate=0 ;;
+      --no-net) nonet=1 ;;
       --keep) keep=1 ;;
       --dry-run) DRY=1 ;;
       --) shift; rest=("$@"); break ;;
@@ -199,9 +249,10 @@ cmd_run() {
     shift || true
   done
   case "${backend}" in
-    linux) run_linux "${target}" ${rest[@]+"${rest[@]}"} ;;
-    macos) run_macos "${target}" "${app}" "${rotate}" "${keep}" ;;
-    *) die "run: use  --linux <image> [-- cmd...]  OR  --macos <golden> --app <name>" ;;
+    linux)     run_linux "${target}" ${rest[@]+"${rest[@]}"} ;;
+    macos)     run_macos "${target}" "${app}" "${rotate}" "${keep}" ;;
+    sandboxed) run_sandboxed "${target}" "${nonet}" "${keep}" ${rest[@]+"${rest[@]}"} ;;
+    *) die "run: use  --linux <image>  |  --macos <golden> --app <name>  |  --sandboxed <app>" ;;
   esac
 }
 

@@ -21,7 +21,8 @@ sudo DRIFTWOOD_INTERVAL_HOURS=6 DRIFTWOOD_ROTATE_MAC=1 ./driftwood.sh install
 sudo ./driftwood.sh uninstall
 
 ./driftwood.sh run --linux ubuntu -- bash           # throwaway Linux app box
-./driftwood.sh run --macos golden --app Safari       # throwaway native macOS app (experimental)
+./driftwood.sh run --sandboxed Safari                # native app, Seatbelt-confined, fresh home (0 GB)
+./driftwood.sh run --macos golden --app Safari       # native app in a throwaway VM (rotates serial+MAC)
 ```
 
 `install` drops a root `LaunchDaemon` (`com.driftwood.rotate`) that fires every
@@ -32,7 +33,17 @@ sudo ./driftwood.sh uninstall
 ## Disposable per-app sandboxes: `driftwood run`
 
 Run a single app in a throwaway sandbox that is **destroyed and re-identified on
-exit**. This is the operational version of the VM model below — two backends.
+exit**. Three ways, trading isolation against cost — pick per app:
+
+| Approach | Command | One-time cost | Native macOS app? | What rotates | Isolation |
+|---|---|---|---|---|---|
+| Linux container | `run --linux` | small image | no (Linux) | hostname + MAC + IP, fully ephemeral | own micro-VM |
+| Seatbelt sandbox | `run --sandboxed` | **0 GB** | **yes** | app state (fresh `$HOME`) | process confinement; shares host kernel + real serial |
+| Disposable macOS VM | `run --macos` | ~16–24 GB once | **yes** | **MAC + serial** + a clean OS | full VM; no iCloud in guest |
+
+Rule of thumb: `--sandboxed` for most native apps (instant, free, keeps iCloud);
+`--macos` when you specifically need the hardware serial/MAC to rotate; `--linux`
+for anything that can run in Linux.
 
 ### Linux apps — fully working
 
@@ -47,7 +58,27 @@ driftwood run --linux <image> --dry-run       # print the exact command first
 Prereq: install Apple `container` (v1.0.0 signed `.pkg` from its Releases), then
 `container system start`.
 
-### Native macOS apps — needs a golden VM
+### Native macOS apps, no VM — Seatbelt (`--sandboxed`, 0 GB)
+
+Runs the real `.app` on the host under a `sandbox-exec` profile with a throwaway
+`$HOME` wiped on exit. No download, instant, keeps iCloud. It rotates *app-level*
+state (fresh home each run ⇒ fresh caches/cookies/UUIDs) and blocks the app from
+writing to your real home; `--no-net` also cuts network. It does **not** rotate
+the hardware serial — the app still sees the host's real serial via IOKit.
+
+```bash
+driftwood run --sandboxed Safari                # fresh throwaway home, wiped on quit
+driftwood run --sandboxed Notes --no-net        # ...and no network
+driftwood run --sandboxed /path/to/App.app      # or a full .app / binary path
+#   --keep   keep the temp home for inspection
+```
+
+Caveats: `sandbox-exec` is deprecated-but-present; reliable for CLI tools and
+simple apps. GUI apps that relaunch via LaunchServices/XPC, or read global prefs
+through `cfprefsd`, can partially escape the fresh-home redirect. For hard
+isolation **and** hardware-identity rotation, use `--macos` below.
+
+### Native macOS apps, full VM — tart (`--macos`)
 
 There is **no container for native macOS apps** — the only way to run a real
 `.app` ephemerally is a disposable macOS VM. `driftwood run --macos` clones a
