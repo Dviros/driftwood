@@ -8,19 +8,23 @@ enum VMState: Equatable {
   case ready
 }
 
-// Network modes that tart actually enforces at the VM boundary.
-enum NetMode: String, CaseIterable, Identifiable {
-  case full = "Full"          // default shared NAT — internet access
-  case isolated = "Isolated"  // softnet — isolated from the host LAN
-  var id: String { rawValue }
-  var runArgs: [String] {
-    switch self {
-    case .full:     return []              // tart's default shared networking
-    case .isolated: return ["--net-softnet"]
-    }
-  }
-  // Split-tunnel + true-offline are roadmap: they need a Tor/VPN gateway VM or
-  // softnet deny-rules, not a single flag.
+// A network posture enforced at the VM boundary (the host app itself can't be
+// network-gated — only the VM can). Built-ins plus one entry per native macOS
+// VPN (Tailscale / ProtonVPN / WireGuard, via `scutil --nc`).
+struct NetChoice: Identifiable, Hashable {
+  let id: String
+  let label: String
+  let icon: String            // SF Symbol
+  let runArgs: [String]       // tart run networking flags
+  let vpnName: String?        // native VPN to connect before boot
+
+  static let full     = NetChoice(id: "full",     label: "Full",     icon: "globe",
+                                  runArgs: [], vpnName: nil)
+  static let isolated = NetChoice(id: "isolated", label: "Isolated", icon: "shield.lefthalf.filled",
+                                  runArgs: ["--net-softnet"], vpnName: nil)
+  static let offline  = NetChoice(id: "offline",  label: "Offline",  icon: "wifi.slash",
+                                  runArgs: ["--net-softnet", "--net-softnet-block=0.0.0.0/0"], vpnName: nil)
+  static let base = [full, isolated, offline]
 }
 
 final class VMManager: ObservableObject {
@@ -28,13 +32,16 @@ final class VMManager: ObservableObject {
   static let image  = "ghcr.io/cirruslabs/macos-sequoia-vanilla:latest"
 
   @Published var state: VMState = .checking
-  @Published var netMode: NetMode = .isolated
+  @Published var net: NetChoice = .full
+  @Published var netChoices: [NetChoice] = NetChoice.base
   @Published var message = ""
 
   private var download: Process?
+  private var vmProcs: [String: Process] = [:]   // retain running VMs until they exit
 
   func refresh() {
     state = (run(["list"]) ?? "").contains(Self.golden) ? .ready : .noGolden
+    refreshNet()
   }
 
   /// Pull the golden once (~tens of GB, APFS CoW so every clone after is free).
@@ -78,17 +85,27 @@ final class VMManager: ObservableObject {
     // those; rotate for everything else.
     if !isAppStore { _ = run(["set", clone, "--random-mac", "--random-serial"]) }
 
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: tart)
-    p.arguments = ["run"] + netMode.runArgs + [clone]
-    p.terminationHandler = { [weak self] _ in
-      DispatchQueue.global().async { _ = self?.run(["delete", clone]) }   // destroy on close
-    }
-    do { try p.run() } catch { _ = run(["delete", clone]); message = "Couldn't start the VM."; return }
+    let netArgs = net.runArgs, vpn = net.vpnName, netLabel = net.label
     message = "Booting a disposable VM for \(appName)…"
 
     DispatchQueue.global().async { [weak self] in
       guard let self else { return }
+      if let vpn { self.ensureVPN(vpn) }                     // bring the native VPN up first
+
+      let p = Process()
+      p.executableURL = URL(fileURLWithPath: self.tart)
+      p.arguments = ["run"] + netArgs + [clone]
+      p.terminationHandler = { [weak self] _ in
+        DispatchQueue.global().async { _ = self?.run(["delete", clone]) }      // destroy on close
+        DispatchQueue.main.async { self?.vmProcs[clone] = nil }
+      }
+      do { try p.run() } catch {
+        _ = self.run(["delete", clone])
+        DispatchQueue.main.async { self.message = "Couldn't start the VM." }
+        return
+      }
+      DispatchQueue.main.async { self.vmProcs[clone] = p }
+
       guard let ip = self.waitIP(clone) else {
         DispatchQueue.main.async { self.message = "VM up but no network yet — open \(appName) from inside the VM." }
         return
@@ -100,7 +117,7 @@ final class VMManager: ObservableObject {
       }
       DispatchQueue.main.async {
         if ok {
-          self.message = "\(appName) launched inside disposable VM \(clone) (\(self.netMode.rawValue) net)."
+          self.message = "\(appName) running in a disposable VM · \(netLabel) network."
         } else if isAppStore {
           self.message = "\(appName) isn't in the golden yet — click ‘Manage golden’, sign into the App Store, install it, then shut down. Clones will run it."
         } else {
@@ -120,6 +137,42 @@ final class VMManager: ObservableObject {
       guard let self, let ip = self.waitIP(Self.golden) else { return }
       _ = self.ssh(ip, "open -a \"App Store\"")
     }
+  }
+
+  // MARK: native VPN + network posture (scutil --nc = NetworkExtension)
+  func refreshNet() {
+    var choices = NetChoice.base
+    for name in listVPNs() {
+      choices.append(NetChoice(id: "vpn:\(name)", label: name, icon: "lock.shield.fill",
+                               runArgs: [], vpnName: name))   // shared NAT egresses via the VPN
+    }
+    netChoices = choices
+    if !choices.contains(where: { $0.id == net.id }) { net = choices.first ?? .full }
+  }
+  private func listVPNs() -> [String] {
+    guard let out = shell("/usr/sbin/scutil", ["--nc", "list"]) else { return [] }
+    var names: [String] = []
+    for line in out.split(separator: "\n") where line.contains("VPN") {
+      if let r = line.range(of: #""[^"]+""#, options: .regularExpression) {
+        names.append(String(line[r]).trimmingCharacters(in: CharacterSet(charactersIn: "\"")))
+      }
+    }
+    return names
+  }
+  private func ensureVPN(_ name: String) {
+    _ = shell("/usr/sbin/scutil", ["--nc", "start", name])
+    for _ in 0..<20 {
+      if (shell("/usr/sbin/scutil", ["--nc", "status", name]) ?? "").contains("Connected") { return }
+      Thread.sleep(forTimeInterval: 1)
+    }
+  }
+  @discardableResult
+  private func shell(_ path: String, _ args: [String]) -> String? {
+    let p = Process(); p.executableURL = URL(fileURLWithPath: path); p.arguments = args
+    let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+    do { try p.run() } catch { return nil }
+    let d = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+    return String(data: d, encoding: .utf8)
   }
 
   private func waitIP(_ clone: String) -> String? {

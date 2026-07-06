@@ -57,9 +57,15 @@ struct ContentView: View {
 
   private var header: some View {
     HStack(spacing: 12) {
-      Image(systemName: "wind").foregroundStyle(.teal)
+      Image(systemName: "shield.lefthalf.filled").font(.title3)
+        .foregroundStyle(.teal).symbolRenderingMode(.hierarchical)
       Text("driftwood").font(.headline)
-      Text("\(store.running.count) live").font(.caption).foregroundStyle(.secondary)
+      if store.running.count > 0 {
+        Text("\(store.running.count) sandboxed").font(.caption2.weight(.semibold))
+          .foregroundStyle(.green)
+          .padding(.horizontal, 7).padding(.vertical, 2)
+          .background(Capsule().fill(.green.opacity(0.15)))
+      }
       Spacer()
       Picker("", selection: $store.policy) {
         ForEach(Policy.allCases) { Text($0.rawValue).tag($0) }
@@ -95,10 +101,11 @@ struct ContentView: View {
           Text("Golden ready — apps open in a throwaway VM (rotated serial/MAC).").font(.caption)
           Button("Manage golden") { vm.manageGolden() }.controlSize(.small)
           Spacer(minLength: 8)
-          Text("Network").font(.caption).foregroundStyle(.secondary)
-          Picker("", selection: $vm.netMode) {
-            ForEach(NetMode.allCases) { Text($0.rawValue).tag($0) }
-          }.pickerStyle(.segmented).frame(width: 170)
+          Label("Network", systemImage: "network").labelStyle(.iconOnly).foregroundStyle(.secondary)
+          Picker("", selection: $vm.net) {
+            ForEach(vm.netChoices) { Label($0.label, systemImage: $0.icon).tag($0) }
+          }.pickerStyle(.menu).frame(width: 148)
+          .help("Full · Isolated · Offline · route the VM through a native VPN (Tailscale / ProtonVPN / WireGuard)")
         }
         Spacer()
       }
