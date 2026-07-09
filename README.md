@@ -55,6 +55,9 @@ while you're signed into iCloud.
   deletes the whole clone when you close the window.
 - **Different network rules per app.** Full, Isolated, Offline, or route through
   any native VPN — chosen per launch.
+- **Bring your data, or don't.** Every launch is **Blank** (from scratch) or
+  **Cloned** (a throwaway copy of your real profile — logged in, wiped on close).
+  Run your real, signed-in browser in a disposable VM, then vaporize it.
 - **An App Store app in a clean, disposable OS.** Install it once into the
   golden; every clone runs it with no leftover state.
 

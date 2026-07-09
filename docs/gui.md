@@ -147,6 +147,29 @@ keep that login).
 
 ---
 
+## Data: Blank vs Cloned
+
+Independent of the policy, a **Data** control (top bar, or per-app via
+right-click) sets what state the app starts from:
+
+| Mode | The app sees | Your real data |
+|---|---|---|
+| **Blank** (default) | a fresh profile — no cookies, logins, history, or config | moved safely aside (Casual) or untouched on the host (Paranoid); restored on close |
+| **Cloned** | a **throwaway copy of your real profile** — logged in, your settings | copied via APFS copy-on-write (instant); the copy is discarded on close, your real data is never modified |
+
+**Cloned** is what makes "run my real, logged-in browser — disposably" work: the
+session starts from a clone of your actual profile, and on close that clone is
+thrown away while your real profile is untouched. It's journaled and crash-safe
+exactly like Blank — the session always works on a *copy*, never your original
+(verified by the built-in `selftest`).
+
+TCC rule (same as Casual): Casual can clone **non-sandboxed** apps only (App
+Store containers are TCC-locked). For an App Store app, use **Paranoid + Cloned**
+— the VM path seeds a copy of its container, but driftwood needs **Full Disk
+Access** to read it (see [paranoid-vm.md](paranoid-vm.md)).
+
+---
+
 ## Activity & traces
 
 The chart-icon button in the top bar opens the inspector, which has two

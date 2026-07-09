@@ -36,10 +36,17 @@ struct ContentView: View {
                   .contextMenu {
                     Text("Policy — \(app.name)")
                     Button("Use default (\(store.policy.rawValue))") { store.setPolicy(nil, forBundle: app.bundleID) }
-                    Divider()
                     ForEach(Policy.allCases) { p in
                       Button(p.rawValue + (store.appPolicy[app.bundleID] == p ? "  ✓" : "")) {
                         store.setPolicy(p, forBundle: app.bundleID)
+                      }
+                    }
+                    Divider()
+                    Text("Data")
+                    Button("Use default (\(store.dataMode.rawValue))") { store.setDataMode(nil, forBundle: app.bundleID) }
+                    ForEach(DataMode.allCases) { d in
+                      Button(d.rawValue + (store.appDataMode[app.bundleID] == d ? "  ✓" : "")) {
+                        store.setDataMode(d, forBundle: app.bundleID)
                       }
                     }
                   }
@@ -70,7 +77,11 @@ struct ContentView: View {
       Picker("", selection: $store.policy) {
         ForEach(Policy.allCases) { Text($0.rawValue).tag($0) }
       }
-      .pickerStyle(.segmented).frame(width: 240).help(store.policy.blurb)
+      .pickerStyle(.segmented).frame(width: 228).help(store.policy.blurb)
+      Picker("", selection: $store.dataMode) {
+        ForEach(DataMode.allCases) { Label($0.rawValue, systemImage: $0 == .blank ? "sparkles" : "doc.on.doc").tag($0) }
+      }
+      .pickerStyle(.menu).frame(width: 118).help("Blank = from scratch · Cloned = a throwaway copy of your real data (logged in), discarded on close")
       Toggle("Ask on close", isOn: $store.askOnClose).toggleStyle(.checkbox).controlSize(.small)
       TextField("Search", text: $store.query).textFieldStyle(.roundedBorder).frame(width: 150)
       Button { showInspector = true } label: { Image(systemName: "chart.bar.xaxis") }

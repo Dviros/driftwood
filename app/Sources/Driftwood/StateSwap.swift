@@ -36,8 +36,12 @@ struct StateSwap {
      "Saved Application State/\(bundleID).savedState"]
   }
 
+  /// Move the app's real state aside. If `seed` is true, also CoW-clone the real
+  /// data back into place, so the app launches against a *disposable copy* of
+  /// your real profile (logged in) rather than a blank one — your real data
+  /// stays safely stashed and is restored on close.
   @discardableResult
-  func stash() -> Bool {
+  func stash(seed: Bool = false) -> Bool {
     let fm = FileManager.default
     try? fm.createDirectory(atPath: sessionDir, withIntermediateDirectories: true)
     var journal: [[String: String]] = []
@@ -48,9 +52,20 @@ struct StateSwap {
       journal.append(["orig": src, "stash": dst])
       writeJournal(journal)                 // record intent BEFORE the move
       try? fm.moveItem(atPath: src, toPath: dst)
+      if seed && fm.fileExists(atPath: dst) && !fm.fileExists(atPath: src) {
+        clone(dst, src)                     // disposable CoW copy of the real data
+      }
     }
     if !journal.isEmpty { flushPrefsCache() }
     return !journal.isEmpty
+  }
+
+  // APFS copy-on-write clone (`cp -c`) — instant, ~0 extra disk until modified.
+  private func clone(_ from: String, _ to: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/cp")
+    p.arguments = ["-c", "-R", from, to]
+    try? p.run(); p.waitUntilExit()
   }
 
   /// Discard the session, put the real state back. Crash-safe: only removes an
@@ -131,11 +146,23 @@ struct StateSwap {
     sw.restore()                                                               // ephemeral: revert
     let ok = (try? String(contentsOfFile: pref)) == "REAL"
           && (try? String(contentsOfFile: data)) == "REAL"
+
+    // Cloned (seed) mode: real moved aside AND a working copy left in place.
+    try? "REAL".write(toFile: pref, atomically: true, encoding: .utf8)
+    try? fm.createDirectory(atPath: lib + "/Application Support/TestApp", withIntermediateDirectories: true)
+    try? "REAL".write(toFile: data, atomically: true, encoding: .utf8)
+    var sw2 = StateSwap(bundleID: "com.test.app", appName: "TestApp", sessionID: "selftest2")
+    sw2.libRoot = lib
+    _ = sw2.stash(seed: true)
+    let seeded = (try? String(contentsOfFile: data)) == "REAL"                 // app sees a COPY of real data
+    try? "SESSION".write(toFile: data, atomically: true, encoding: .utf8)      // app edits its copy
+    sw2.restore()
+    let seedRestored = (try? String(contentsOfFile: data)) == "REAL"          // real data intact on close
     try? fm.removeItem(atPath: NSString(string: lib).deletingLastPathComponent)
 
-    let pass = stashed && fresh && ok
+    let pass = stashed && fresh && ok && seeded && seedRestored
     FileHandle.standardError.write(
-      "SELFTEST stashed=\(stashed) fresh=\(fresh) restored=\(ok) => \(pass ? "PASS" : "FAIL")\n".data(using: .utf8)!)
+      "SELFTEST stashed=\(stashed) fresh=\(fresh) restored=\(ok) seeded=\(seeded) seedRestored=\(seedRestored) => \(pass ? "PASS" : "FAIL")\n".data(using: .utf8)!)
     exit(pass ? 0 : 1)
   }
 }

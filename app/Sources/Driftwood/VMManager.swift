@@ -76,7 +76,7 @@ final class VMManager: ObservableObject {
   /// Disposable session: linked clone → rotate serial+MAC → boot → launch the
   /// app INSIDE the guest (by name if it's in the golden, else copy the bundle
   /// in) → destroy on window close. Verified: SSH `open -a` launches guest apps.
-  func launch(appPath: String, appName: String, isAppStore: Bool) {
+  func launch(appPath: String, appName: String, isAppStore: Bool, bundleID: String, seed: Bool) {
     guard state == .ready else { message = "Download the golden image first."; return }
     let clone = "dw-" + UUID().uuidString.prefix(8)
     guard run(["clone", Self.golden, clone]) != nil else { message = "Linked clone failed."; return }
@@ -110,14 +110,19 @@ final class VMManager: ObservableObject {
         DispatchQueue.main.async { self.message = "VM up but no network yet — open \(appName) from inside the VM." }
         return
       }
+      var seededOK = true
+      if seed { seededOK = self.seedGuest(ip: ip, bundleID: bundleID, appName: appName) }
+
       var ok = self.ssh(ip, "open -a \"\(appName)\" && echo DW_OK")   // installed in the golden?
-      if !ok && !isAppStore {                                          // copy in (non-MAS only)
+      if !ok && !isAppStore {                                          // copy the .app in (non-MAS only)
         _ = self.scp(ip, appPath)
         ok = self.ssh(ip, "open \"/Users/admin/\((appPath as NSString).lastPathComponent)\" && echo DW_OK")
       }
       DispatchQueue.main.async {
+        let data = seed ? (seededOK ? " · cloned data"
+          : " · data seed FAILED (grant driftwood Full Disk Access for App Store apps)") : ""
         if ok {
-          self.message = "\(appName) running in a disposable VM · \(netLabel) network."
+          self.message = "\(appName) running in a disposable VM · \(netLabel) network\(data)."
         } else if isAppStore {
           self.message = "\(appName) isn't in the golden yet — click ‘Manage golden’, sign into the App Store, install it, then shut down. Clones will run it."
         } else {
@@ -125,6 +130,29 @@ final class VMManager: ObservableObject {
         }
       }
     }
+  }
+
+  /// Clone the app's real data into the guest's admin home before launch, so the
+  /// app opens logged-in with a disposable copy of your profile. Non-sandboxed
+  /// data needs no special access; App Store Containers require driftwood to have
+  /// Full Disk Access. Best-effort — returns false if a copy was blocked.
+  private func seedGuest(ip: String, bundleID: String, appName: String) -> Bool {
+    let home = NSHomeDirectory() + "/Library"
+    let rels = ["Containers/\(bundleID)",
+                "Application Support/\(appName)", "Application Support/\(bundleID)",
+                "Preferences/\(bundleID).plist",
+                "HTTPStorages/\(bundleID)", "WebKit/\(bundleID)",
+                "Cookies/\(bundleID).binarycookies"]
+    var ok = true
+    for rel in rels {
+      let src = home + "/" + rel
+      guard FileManager.default.fileExists(atPath: src) else { continue }
+      let parent = (("/Users/admin/Library/" + rel) as NSString).deletingLastPathComponent
+      _ = ssh(ip, "mkdir -p \"\(parent)\" && echo DW_OK")
+      let out = expectRun("scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r \"\(src)\" admin@\(ip):\"\(parent)/\"").lowercased()
+      if out.contains("denied") || out.contains("not permitted") || out.contains("no such") { ok = false }
+    }
+    return ok
   }
 
   /// Open the golden read-write and land on the App Store so the user installs

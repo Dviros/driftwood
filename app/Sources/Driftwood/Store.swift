@@ -23,6 +23,18 @@ enum Policy: String, CaseIterable, Identifiable {
   }
 }
 
+enum DataMode: String, CaseIterable, Identifiable {
+  case blank = "Blank"      // from scratch — no cookies / logins / history
+  case cloned = "Cloned"    // a disposable copy of your real data (logged in), discarded on close
+  var id: String { rawValue }
+  var blurb: String {
+    switch self {
+    case .blank:  return "From scratch — no cookies, logins, or history."
+    case .cloned: return "A throwaway copy of your real data (logged in); discarded on close."
+    }
+  }
+}
+
 struct InstalledApp: Identifiable, Hashable {
   let id = UUID()
   let name: String
@@ -46,6 +58,8 @@ final class Store: ObservableObject {
   @Published var metrics: [UUID: Metrics] = [:]
   @Published var message = ""
   @Published var appPolicy: [String: Policy] = [:]   // bundleID -> per-app override
+  @Published var dataMode: DataMode = .blank
+  @Published var appDataMode: [String: DataMode] = [:]   // bundleID -> per-app override
 
   var vm: VMManager?              // set by the app; drives the Paranoid (VM) policy
   private var pidForApp: [UUID: pid_t] = [:]
@@ -56,6 +70,7 @@ final class Store: ObservableObject {
   init() {
     StateSwap.recoverAll()          // undo anything a crash left mid-session
     loadAppPolicy()
+    loadAppDataMode()
     rescan()
     NSWorkspace.shared.notificationCenter.addObserver(
       self, selector: #selector(appTerminated(_:)),
@@ -109,23 +124,35 @@ final class Store: ObservableObject {
       appPolicy = raw.compactMapValues { Policy(rawValue: $0) }
     }
   }
+  func effectiveDataMode(_ app: InstalledApp) -> DataMode { appDataMode[app.bundleID] ?? dataMode }
+  func setDataMode(_ d: DataMode?, forBundle bid: String) {
+    if let d { appDataMode[bid] = d } else { appDataMode.removeValue(forKey: bid) }
+    UserDefaults.standard.set(appDataMode.mapValues { $0.rawValue }, forKey: "appDataMode")
+  }
+  private func loadAppDataMode() {
+    if let raw = UserDefaults.standard.dictionary(forKey: "appDataMode") as? [String: String] {
+      appDataMode = raw.compactMapValues { DataMode(rawValue: $0) }
+    }
+  }
 
   func launch(_ app: InstalledApp) {
     message = ""
     guard NSRunningApplication.runningApplications(withBundleIdentifier: app.bundleID).isEmpty else {
       message = "\(app.name) is already running — quit it first to sandbox it."; return
     }
+    let seed = effectiveDataMode(app) == .cloned
     switch effectivePolicy(app) {
     case .paranoid:
       guard let vm else { message = "VM engine unavailable."; return }
-      vm.launch(appPath: app.path, appName: app.name, isAppStore: app.source == .appStore)
+      vm.launch(appPath: app.path, appName: app.name,
+                isAppStore: app.source == .appStore, bundleID: app.bundleID, seed: seed)
       message = vm.message
     case .persistent:
       sessionPolicy[app.id] = .persistent
       openNative(app, swap: nil)
     case .casual:
       let sw = StateSwap(bundleID: app.bundleID, appName: app.name, sessionID: UUID().uuidString)
-      sw.stash()
+      sw.stash(seed: seed)
       swapForApp[app.id] = sw
       sessionPolicy[app.id] = .casual
       openNative(app, swap: sw)

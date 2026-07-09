@@ -152,6 +152,10 @@ skip identity rotation, or the receipt voids with `exit 173`).
 - The GUI's Paranoid automation (auto-launching the app, **Manage golden**)
   shells out to `/usr/bin/expect` to drive SSH. It ships with macOS; the
   `driftwood.sh` CLI path doesn't use it.
+- **Cloned** data mode copies your real app data into the clone so the app opens
+  logged in. Non-sandboxed apps need nothing extra; to seed an **App Store**
+  app's data (its TCC-protected `~/Library/Containers`), grant driftwood **Full
+  Disk Access** (System Settings ▸ Privacy & Security ▸ Full Disk Access).
 
 ---
 

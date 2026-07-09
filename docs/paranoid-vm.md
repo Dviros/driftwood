@@ -178,6 +178,25 @@ Signing into the App Store during "Manage golden" authorizes that Apple ID on
 the golden exactly as it would on any Mac — driftwood just opens the App
 Store for you; the account linking is Apple's doing, not driftwood's.
 
+### 3. Seeding your real data (Cloned mode)
+
+By default a Paranoid clone starts **Blank** — the app opens with no state. Set
+the **Data** control to **Cloned** and, right after the clone boots, driftwood
+copies your real app data into the guest's `admin` home over SSH *before*
+launching the app — so it opens **logged in** with a throwaway copy of your
+profile, which vanishes with the clone. Your host data is only read, never moved
+or modified.
+
+- **Non-sandboxed apps** (data in `Application Support` / `Preferences` / cookies):
+  seeded with no special permission.
+- **App Store apps** (data in `~/Library/Containers/<bundleID>`): the container is
+  **TCC-protected**, so driftwood must have **Full Disk Access** (System Settings
+  ▸ Privacy & Security ▸ Full Disk Access ▸ driftwood) to read and seed it. Without
+  it, the app still runs — just blank — and the status line tells you FDA is needed.
+
+This is the only way to get a **logged-in App Store app in a fully disposable,
+rotated VM**.
+
 ---
 
 ## The App Store reality

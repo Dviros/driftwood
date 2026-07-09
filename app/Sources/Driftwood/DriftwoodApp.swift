@@ -17,7 +17,7 @@ struct DriftwoodApp: App {
         .environmentObject(store)
         .environmentObject(vm)
         .onAppear { store.vm = vm; vm.refresh() }
-        .frame(minWidth: 760, minHeight: 500)
+        .frame(minWidth: 900, minHeight: 500)
     }
     .windowStyle(.hiddenTitleBar)
   }
